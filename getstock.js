@@ -1,48 +1,81 @@
 var unirest = require("unirest");
 
-var cache = {
-	"maxAgeSeconds": 10,
-	"lastUpdate": null,
-	"lastResponse": {},
-	"maxLoop": 30
-};
+function TimeManagedValue() {
+	this.maxAgeSeconds = 6;
+	this.lastUpdate = null;
+	this.lastResponse = null;
 
-function validCache() {
-	if (cache.lastUpdate == null) {
-		return false;
+	this.stats = {
+		"cached": 0,
+		"updated": 0
+	};
+
+	this.expiresIn = function () {
+		return this.maxAgeSeconds - this.ageOfValue();
 	}
-	var delta = (new Date() - cache.lastUpdate) / 1000; 
-	console.log("delta ", delta);
-	console.log("cache.maxAgeSeconds ", cache.maxAgeSeconds);
-	return delta < cache.maxAgeSeconds;
+	this.ageOfValue = function () {
+		if (this.lastUpdate == null) {
+			return 0;
+		}
+		return (new Date() - this.lastUpdate) / 1000;
+	}
+	this.validCache = function () {
+		if (this.lastUpdate == null) {
+			return false;
+		}
+		return this.expiresIn() > 0;
+	}
+	this.validatedValue = function () {
+		if (this.validCache()) { return this.value(); }
+		return null;
+	};
+	this.value = function () {
+		this.stats.cached++;
+		return this.lastResponse;
+	};
+	this.updateCache = function (e) {
+		this.stats.updated++;
+		this.lastResponse = e;
+		this.lastUpdate = new Date();
+		console.log("Cache updated at:", this.lastUpdate);
+	};
 }
-function getStockQuote(handleResponse, update) {
-	if (validCache()) {
-		console.log("Cached Query");
-		return handleResponse(cache.lastResponse);
+
+// hack to show updates
+var base = 1;
+function dgetStockQuote(handleResponse, cache) {
+	var result = cache.validatedValue();
+	if (result) {
+		return handleResponse(result);
 	}
+	base++;
+	result = {
+		explains: [],
+		count: 1,
+		quotes: [
+			{
+				exchange: 'NYQ',
+				shortname: 'International Business Machines',
+				quoteType: 'EQUITY',
+				symbol: 'IBM',
+				index: 'quotes',
+				score: base,
+				typeDisp: 'Equity',
+				longname: 'International Business Machines Corporation',
+				isYahooFinance: true
+			},
+		]
+	};
+	cache.updateCache(result);
+	handleResponse(cache.value());
+}
 
+function getStockQuote(handleResponse, cache) {
+	var result = cache.validatedValue();
+	if (result) {
+		return handleResponse(result);
+	}
 	console.log("Run Query");
-	// var r = {
-	// 	explains: [],
-	// 	count: 15,
-	// 	quotes: [
-	// 	  {
-	// 		exchange: 'NYQ',
-	// 		shortname: 'International Business Machines',
-	// 		quoteType: 'EQUITY',
-	// 		symbol: 'IBM',
-	// 		index: 'quotes',
-	// 		score: 11838300,
-	// 		typeDisp: 'Equity',
-	// 		longname: 'International Business Machines Corporation',
-	// 		isYahooFinance: true
-	// 	  },
-	// 	]
-	// };
-	// update(r);
-	// handleResponse(cache.lastResponse);
-
 	var req = unirest("GET", "https://apidojo-yahoo-finance-v1.p.rapidapi.com/auto-complete");
 	req.query({
 		"q": "IBM",
@@ -55,27 +88,28 @@ function getStockQuote(handleResponse, update) {
 	});
 	req.end(function (res) {
 		if (res.error) throw new Error(res.error);
-		update(res.body);
-		handleResponse(cache.lastResponse)
+		cache.updateCache(res.body);
+		handleResponse(cache.value());
 	});
 }
 
-function printStockQuote(e) {
-	console.log(e.quotes[0]);
-	cache.maxLoop--;
-	if (cache.maxLoop > 0) {
-		setTimeout(queryStockLoop, 1000)
-	}
-}
-
-function updateCache(e) {
-	cache.lastResponse = e;
-	cache.lastUpdate = new Date(); 
-	console.log ("Cache updated to:", cache.lastUpdate)
-}
- 
 function queryStockLoop() {
-	getStockQuote(printStockQuote, updateCache)
+	var cache = new TimeManagedValue();
+	var loop = 60 * 5;
+	var f = function () {
+		getStockQuote(printAndReset, cache)
+	};
+	var printAndReset = function (value) {
+		console.log (JSON.stringify(value)) 
+		console.log(
+			value.quotes[0].symbol, 'value:',  value.quotes[0].score, 
+			"age:", cache.ageOfValue().toFixed(2), '(s)', 
+			"expires:", cache.expiresIn().toFixed(2), '(s)', 
+			JSON.stringify(cache.stats));
+		if (loop-- > 0) {
+			setTimeout(f, 1000)
+		}
+	}
+	f()
 }
-
 queryStockLoop()
